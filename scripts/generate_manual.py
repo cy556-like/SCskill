@@ -194,7 +194,7 @@ def generate_manual(survey_data, output_dir):
                     # 尝试用 olefile 直接读取
                     try:
                         import olefile
-                        from langchain_core.documents import Document
+                        from langchain_core.documents import Document as LCDocument
                         import re as _re
                         
                         ole = olefile.OleFileIO(str(doc_file))
@@ -241,7 +241,7 @@ def generate_manual(survey_data, output_dir):
                 # 尝试用 olefile 读取
                 try:
                     import olefile
-                    from langchain_core.documents import Document
+                    from langchain_core.documents import Document as LCDocument
                     # 直接用之前的方式读取
                     print(f"[INFO] 从知识库找到 .doc 模板: {f}（尝试转换）")
                     # 用 LibreOffice 或 Word 转换
