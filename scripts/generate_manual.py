@@ -171,29 +171,70 @@ def generate_manual(survey_data, output_dir):
     """生成质量手册"""
     
     # 1. 查找模板文件
-    template_path = TEMPLATES_DIR / TEMPLATE_FILE
-    if not template_path.exists():
-        # 尝试查找 QZAGENT 项目内的模板
-        project_root = SKILL_ROOT.parent
-        alt_paths = [
-            project_root / "data" / "documents" / "agent_dfmea-risk-agent" / "手册" / TEMPLATE_FILE,
-            project_root / "skills" / "SCskill" / "templates" / TEMPLATE_FILE,
-        ]
-        for p in alt_paths:
-            if p.exists():
-                template_path = p
+    # 优先从知识库"手册"分类目录下查找 .docx 文件（用户上传的模板）
+    project_root = SKILL_ROOT.parent
+    manual_dir = project_root / "data" / "documents" / "agent_dfmea-risk-agent" / "手册"
+    template_path = None
+    
+    if manual_dir.exists():
+        # 查找目录下的 .docx 文件
+        for f in os.listdir(str(manual_dir)):
+            if f.lower().endswith('.docx'):
+                template_path = manual_dir / f
+                print(f"[INFO] 从知识库"手册"分类找到模板: {f}")
                 break
-        else:
-            return {
-                "status": "error",
-                "message": f"模板文件未找到: {TEMPLATE_FILE}，请先上传模板到知识库的"手册"分类"
-            }
+    
+    # 如果知识库没有，查找 SCskill 自带的模板
+    if template_path is None:
+        builtin_path = TEMPLATES_DIR / TEMPLATE_FILE
+        if builtin_path.exists():
+            template_path = builtin_path
+            print(f"[INFO] 使用内置模板: {TEMPLATE_FILE}")
+    
+    # 最后查找 .doc 文件（需要转换）
+    if template_path is None and manual_dir.exists():
+        for f in os.listdir(str(manual_dir)):
+            if f.lower().endswith('.doc'):
+                # 尝试用 olefile 读取
+                try:
+                    import olefile
+                    from langchain_core.documents import Document
+                    # 直接用之前的方式读取
+                    print(f"[INFO] 从知识库找到 .doc 模板: {f}（尝试转换）")
+                    # 用 LibreOffice 或 Word 转换
+                    import subprocess, tempfile
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        result = subprocess.run(
+                            ['soffice', '--headless', '--convert-to', 'docx', str(manual_dir / f), '--outdir', tmp_dir],
+                            capture_output=True, text=True, timeout=60
+                        )
+                        if result.returncode == 0:
+                            basename = os.path.splitext(f)[0]
+                            converted = os.path.join(tmp_dir, basename + '.docx')
+                            if os.path.exists(converted):
+                                template_path = Path(converted)
+                                print(f"[INFO] .doc 转换成功")
+                except Exception as e:
+                    print(f"[WARN] .doc 模板转换失败: {e}")
+    
+    if template_path is None:
+        return {
+            "status": "error",
+            "message": "模板文件未找到。请在"企业内部体系文件 → 手册"分类下上传一个 .docx 格式的质量手册模板文件。"
+        }
     
     print(f"[INFO] 使用模板: {template_path}")
+    print(f"[INFO] 正在分析体系调研数据...")
     
     # 2. 构建替换映射
     replacements, info = build_replacement_map(survey_data)
-    print(f"[INFO] 替换映射: {len(replacements)} 条")
+    print(f"[INFO] 识别到 {len(replacements)} 处需要替换的内容")
+    print(f"[INFO] 公司: {info.get('company_name','?')}, 产品: {info.get('products','?')}")
+    print(f"[INFO] 正在加载模板文件...")
+    
+    # 3. 加载模板
+    doc = Document(str(template_path))
+    print(f"[INFO] 模板加载完成，开始替换内容...")
     
     # 3. 加载模板
     doc = Document(str(template_path))
@@ -236,6 +277,7 @@ def generate_manual(survey_data, output_dir):
                                 hf_count += 1
     
     print(f"[INFO] 替换完成: 段落{para_count}处, 表格{table_count}处, 页眉页脚{hf_count}处")
+    print(f"[INFO] 正在生成文件...")
     
     # 7. 生成文件名
     company_name = info.get('company_name', '企业')
