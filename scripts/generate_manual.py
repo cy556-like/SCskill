@@ -174,7 +174,7 @@ def generate_manual(survey_data, output_dir):
     # 1. 查找模板文件
     # 优先从知识库手册分类目录下查找模板（.docx 或 .doc）
     project_root = SKILL_ROOT.parent
-    manual_dir = project_root / "data" / "documents" / "agent_dfmea-risk-agent" / 手册
+    manual_dir = project_root / "data" / "documents" / "agent_dfmea-risk-agent" / "手册"
     template_path = None
     need_convert = False  # 是否需要从 .doc 转换
     
