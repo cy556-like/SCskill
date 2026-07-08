@@ -1,43 +1,41 @@
 # -*- coding: utf-8 -*-
 #!/usr/bin/env python3
 """
-SCskill - 质量手册生成脚本（AI 驱动版）
+SCskill - 质量手册生成脚本（docx 处理库）
 ==========================================
-工作流程：
-  1. 从企业内部知识库"手册"分类下读取模板文件（.docx 或 .doc）
-  2. 提取模板结构（段落 + 表格 + 页眉页脚）带索引的纯文本概览
-  3. 调用 LLM 分析"模板内容 + 用户体系调研数据"，返回结构化修改方案
-  4. 应用修改方案到 docx（保留原模板格式）
-  5. 保存到输出目录
+本模块只负责 docx 模板处理（提取概览、应用修改），不直接调用 LLM。
+LLM 调用由后端 routes.py 用项目已有的 langchain create_llm 完成，
+这样自动跟随用户在前端选择的模型，无需 skill 自己处理 LLM 配置。
 
-LLM 配置通过环境变量传入（由后端 routes.py 注入）：
-  LLM_API_KEY    - API Key
-  LLM_BASE_URL   - OpenAI 兼容的 base URL（DashScope / 火山引擎 / 智谱等）
-  LLM_MODEL      - 模型名（默认 glm-5.2）
-
-用法：
-  python generate_manual.py --survey-json '{...}' --output-dir /path/to/output
+提供以下函数供后端调用：
+  - find_template()              查找知识库手册分类下的模板
+  - convert_doc_to_docx(path)    .doc 转 .docx
+  - extract_template_overview(doc)  提取模板结构概览
+  - format_overview_for_llm(overview)  概览格式化为文本
+  - format_survey_for_llm(survey)  调研数据格式化为文本
+  - build_llm_prompt(overview_text, survey_text)  构造 LLM 提示词
+  - parse_llm_modifications(llm_text)  解析 LLM 返回的修改方案 JSON
+  - apply_modifications(doc, modifications)  应用修改方案到 docx
 """
 import os
 import sys
 import json
 import re
-import argparse
-import tempfile
 import subprocess
-import shutil
+import tempfile
 from pathlib import Path
 from datetime import datetime
 
-# 确保依赖
+
 def ensure_packages():
+    """确保 python-docx 已安装"""
     import importlib
-    for name in ['docx', 'openai']:
-        try:
-            importlib.import_module(name)
-        except ImportError:
-            subprocess.check_call([sys.executable, '-m', 'pip', 'install',
-                                   'python-docx', 'openai', '--quiet'])
+    try:
+        importlib.import_module('docx')
+    except ImportError:
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install',
+                               'python-docx', '--quiet'])
+
 
 ensure_packages()
 
@@ -85,7 +83,7 @@ def find_template():
 
 
 def convert_doc_to_docx(doc_path):
-    """用 LibreOffice 或 Word COM 把 .doc 转成 .docx"""
+    """用 LibreOffice 或 Word COM 把 .doc 转成 .docx，返回临时 .docx 路径"""
     tmp_dir = tempfile.mkdtemp(prefix='doc2docx_')
     soffice_paths = [
         'soffice',
@@ -163,7 +161,7 @@ def extract_template_overview(doc, max_paras=None):
         overview["paragraphs"].append({
             "index": i,
             "style": style,
-            "text": text[:500]  # 截断超长段落，避免 prompt 爆炸
+            "text": text[:500]  # 截断超长段落
         })
 
     # 表格
@@ -294,14 +292,13 @@ def format_survey_for_llm(survey):
 
 
 # ===================================================================
-# 3. 调用 LLM 获取修改方案
+# 3. 构造 LLM 提示词
 # ===================================================================
 
 def build_llm_prompt(overview_text, survey_text):
-    """构造 LLM 提示词"""
+    """构造 LLM 提示词，返回 (system_prompt, user_prompt)"""
     today = datetime.now()
     today_str = f"{today.year}年{today.month}月{today.day}日"
-    today_dot = f"{today.year}.{today.month}.{today.day}"
     year_str = str(today.year)
 
     system = (
@@ -349,68 +346,16 @@ def build_llm_prompt(overview_text, survey_text):
     return system, user
 
 
-def call_llm(system_prompt, user_prompt):
-    """调用 LLM，返回纯文本响应"""
-    api_key = os.environ.get('LLM_API_KEY', '').strip()
-    base_url = os.environ.get('LLM_BASE_URL', '').strip()
-    model = os.environ.get('LLM_MODEL', 'glm-5.2').strip()
-
-    if not api_key:
-        raise RuntimeError("LLM_API_KEY 未设置")
-    if not base_url:
-        raise RuntimeError("LLM_BASE_URL 未设置")
-
-    from openai import OpenAI
-
-    # 兼容 DashScope / 火山引擎 / 智谱（都是 OpenAI 兼容接口）
-    client = OpenAI(api_key=api_key, base_url=base_url)
-
-    print(f"[INFO] 调用 LLM: model={model}, base_url={base_url[:50]}...")
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.2,  # 低温度，提高一致性
-            max_tokens=8192,
-            timeout=90,
-        )
-        text = resp.choices[0].message.content.strip()
-        print(f"[INFO] LLM 返回 {len(text)} 字符")
-        return text
-    except Exception as e:
-        # 尝试备用 Key
-        backup_key = os.environ.get('LLM_API_KEY_BACKUP', '').strip()
-        backup_url = os.environ.get('LLM_BASE_URL_BACKUP', '').strip()
-        if backup_key and backup_url:
-            print(f"[WARN] 主 LLM 调用失败 ({e})，尝试备用配置...")
-            client = OpenAI(api_key=backup_key, base_url=backup_url)
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
-                temperature=0.2,
-                max_tokens=8192,
-                timeout=90,
-            )
-            text = resp.choices[0].message.content.strip()
-            print(f"[INFO] 备用 LLM 返回 {len(text)} 字符")
-            return text
-        raise
-
+# ===================================================================
+# 4. 解析 LLM 修改方案
+# ===================================================================
 
 def parse_llm_modifications(llm_text):
     """从 LLM 响应中解析出 modifications 列表"""
-    # 去掉 markdown 代码块
     text = llm_text.strip()
     text = re.sub(r'^```(?:json)?\s*', '', text)
     text = re.sub(r'\s*```\s*$', '', text)
 
-    # 找最外层 {...}
     m = re.search(r'\{[\s\S]*\}', text)
     if not m:
         print(f"[WARN] LLM 响应中找不到 JSON")
@@ -418,7 +363,7 @@ def parse_llm_modifications(llm_text):
 
     try:
         data = json.loads(m.group(0))
-    except json.JSONDecodeError as e:
+    except json.JSONDecodeError:
         # 尝试修复常见 JSON 错误（尾随逗号）
         fixed = re.sub(r',\s*([}\]])', r'\1', m.group(0))
         try:
@@ -434,7 +379,7 @@ def parse_llm_modifications(llm_text):
 
 
 # ===================================================================
-# 4. 应用修改方案到 docx
+# 5. 应用修改方案到 docx
 # ===================================================================
 
 def set_paragraph_text(p, new_text):
@@ -480,22 +425,16 @@ def apply_global_replace(doc, old, new):
     if not old or old == new:
         return 0
     count = 0
-
-    # 段落
     for p in doc.paragraphs:
         if old in p.text:
             if replace_text_in_paragraph(p, old, new):
                 count += 1
-
-    # 表格
     for t in doc.tables:
         for row in t.rows:
             for c in row.cells:
                 if old in c.text:
                     if replace_text_in_cell(c, old, new):
                         count += 1
-
-    # 页眉页脚
     for sec in doc.sections:
         for hf in [sec.header, sec.first_page_header, sec.even_page_header,
                    sec.footer, sec.first_page_footer, sec.even_page_footer]:
@@ -561,7 +500,6 @@ def apply_table_cell_replace(doc, table_idx, row_idx, col_idx, new_text):
         print(f"[WARN] 列索引 {col_idx} 越界（表格 {table_idx} 行 {row_idx} 共 {len(row.cells)} 列）")
         return False
     cell = row.cells[col_idx]
-    # 替换单元格第一段，清空其余段
     if cell.paragraphs:
         set_paragraph_text(cell.paragraphs[0], new_text)
         for p in cell.paragraphs[1:]:
@@ -585,13 +523,13 @@ def apply_modifications(doc, modifications):
     for i, mod in enumerate(modifications):
         try:
             mod_type = mod.get('type', '')
-            reason = mod.get('reason', '')[:50]
+            reason = (mod.get('reason', '') or '')[:50]
             if mod_type == 'paragraph':
                 idx = int(mod.get('index', -1))
                 new_text = mod.get('new_text', '')
                 if apply_paragraph_replace(doc, idx, new_text):
                     stats['paragraph'] += 1
-                    print(f"  [P{idx}] ✓ {reason}")
+                    print(f"  [P{idx}] OK {reason}")
                 else:
                     stats['failed'] += 1
             elif mod_type == 'table_cell':
@@ -601,7 +539,7 @@ def apply_modifications(doc, modifications):
                 new_text = mod.get('new_text', '')
                 if apply_table_cell_replace(doc, ti, ri, ci, new_text):
                     stats['table_cell'] += 1
-                    print(f"  [T{ti}.R{ri}.C{ci}] ✓ {reason}")
+                    print(f"  [T{ti}.R{ri}.C{ci}] OK {reason}")
                 else:
                     stats['failed'] += 1
             elif mod_type == 'global_replace':
@@ -609,13 +547,13 @@ def apply_modifications(doc, modifications):
                 new = mod.get('new', '')
                 n = apply_global_replace(doc, old, new)
                 stats['global_replace'] += n
-                print(f"  [G] '{old}' -> '{new}' ({n} 处) ✓ {reason}")
+                print(f"  [G] '{old}' -> '{new}' ({n} 处) OK {reason}")
             elif mod_type == 'header_replace':
                 old = mod.get('old', '')
                 new = mod.get('new', '')
                 n = apply_header_replace(doc, old, new)
                 stats['header_replace'] += n
-                print(f"  [H] '{old}' -> '{new}' ({n} 处) ✓ {reason}")
+                print(f"  [H] '{old}' -> '{new}' ({n} 处) OK {reason}")
             else:
                 stats['unknown'] += 1
                 print(f"  [?] 未知类型: {mod_type}")
@@ -623,139 +561,3 @@ def apply_modifications(doc, modifications):
             stats['failed'] += 1
             print(f"  [ERROR] 修改 #{i} 失败: {e}")
     return stats
-
-
-# ===================================================================
-# 5. 主流程
-# ===================================================================
-
-def generate_manual(survey_data, output_dir):
-    """主生成函数"""
-    # 1. 查找模板
-    template_path, need_convert = find_template()
-    if template_path is None:
-        return {
-            "status": "error",
-            "message": "未找到模板文件。请在内部知识库[手册]分类下上传 .docx/.doc 模板，"
-                       "或确保 SCskill/templates/IATF16949_quality_manual_template.docx 存在。"
-        }
-
-    # 2. .doc → .docx
-    actual_template = template_path
-    if need_convert:
-        print(f"[INFO] 正在将 .doc 模板转换为 .docx ...")
-        converted = convert_doc_to_docx(template_path)
-        if not converted:
-            return {
-                "status": "error",
-                "message": "无法将 .doc 模板转换为 .docx。请安装 LibreOffice，或上传 .docx 模板。"
-            }
-        actual_template = Path(converted)
-
-    print(f"[INFO] 加载模板: {actual_template}")
-    doc = Document(str(actual_template))
-    print(f"[INFO] 模板加载完成: {len(doc.paragraphs)} 段, {len(doc.tables)} 表")
-
-    # 3. 提取模板结构概览
-    print(f"[INFO] 提取模板结构概览...")
-    overview = extract_template_overview(doc)
-    overview_text = format_overview_for_llm(overview)
-    survey_text = format_survey_for_llm(survey_data)
-    print(f"[INFO] 概览: {len(overview['paragraphs'])} 非空段落, "
-          f"{len(overview['tables'])} 表格, "
-          f"{len(overview['headers'])} 页眉, "
-          f"{len(overview['footers'])} 页脚")
-    print(f"[INFO] 概览文本长度: {len(overview_text)} 字符")
-
-    # 4. 调用 LLM 获取修改方案
-    print(f"[INFO] 调用 LLM 分析调研数据并生成修改方案...")
-    system_prompt, user_prompt = build_llm_prompt(overview_text, survey_text)
-    try:
-        llm_response = call_llm(system_prompt, user_prompt)
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": f"LLM 调用失败: {e}。请检查 LLM_API_KEY/LLM_BASE_URL 环境变量。"
-        }
-
-    # 5. 解析修改方案
-    modifications = parse_llm_modifications(llm_response)
-    print(f"[INFO] LLM 返回 {len(modifications)} 个修改方案")
-    if not modifications:
-        print(f"[WARN] 未解析到任何修改方案，手册将以原模板输出")
-        print(f"[DEBUG] LLM 原始响应前 500 字: {llm_response[:500]}")
-
-    # 6. 应用修改
-    print(f"[INFO] 开始应用修改方案...")
-    stats = apply_modifications(doc, modifications)
-    print(f"[INFO] 修改完成: {stats}")
-
-    # 7. 保存
-    company_name = (survey_data.get('sv_company_name') or '企业').strip()
-    safe_name = re.sub(r'[\\/:*?"<>|]', '_', company_name)
-    today = datetime.now().strftime("%Y%m%d")
-    filename = f"质量管理手册_{safe_name}_{today}.docx"
-    os.makedirs(output_dir, exist_ok=True)
-    output_path = os.path.join(output_dir, filename)
-    doc.save(output_path)
-    print(f"[OK] 质量手册已生成: {output_path}")
-
-    return {
-        "status": "success",
-        "filename": filename,
-        "file_path": output_path,
-        "company_name": company_name,
-        "modifications_count": len(modifications),
-        "fill_stats": stats,
-        "replacements": {
-            "paragraphs": stats.get('paragraph', 0),
-            "tables": stats.get('table_cell', 0),
-            "global_replace": stats.get('global_replace', 0),
-            "header_replace": stats.get('header_replace', 0),
-        },
-    }
-
-
-def load_survey_data(survey_json_str):
-    """加载体系调研数据"""
-    if not survey_json_str:
-        return {}
-    try:
-        data = json.loads(survey_json_str)
-        if isinstance(data, str):
-            data = json.loads(data)
-        return data
-    except (json.JSONDecodeError, TypeError):
-        return {}
-
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="质量手册 AI 智能生成器")
-    parser.add_argument("--survey-json", required=False, default=None,
-                        help="体系调研数据（JSON 字符串）")
-    parser.add_argument("--output-dir", required=False, default=".",
-                        help="输出目录")
-    return parser.parse_args()
-
-
-def main():
-    if sys.platform == "win32":
-        import io
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
-
-    args = parse_args()
-    survey = load_survey_data(args.survey_json) if args.survey_json else {}
-
-    if not survey:
-        print("[ERROR] 未提供体系调研数据")
-        result = {"status": "error", "message": "未提供体系调研数据"}
-    else:
-        result = generate_manual(survey, args.output_dir)
-
-    print(f"\n[RESULT_JSON]")
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-
-
-if __name__ == "__main__":
-    main()
