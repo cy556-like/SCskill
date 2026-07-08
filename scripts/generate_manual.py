@@ -171,18 +171,60 @@ def generate_manual(survey_data, output_dir):
     """生成质量手册"""
     
     # 1. 查找模板文件
-    # 优先从知识库"手册"分类目录下查找 .docx 文件（用户上传的模板）
+    # 优先从知识库"手册"分类目录下查找模板（.docx 或 .doc）
     project_root = SKILL_ROOT.parent
     manual_dir = project_root / "data" / "documents" / "agent_dfmea-risk-agent" / "手册"
     template_path = None
+    need_convert = False  # 是否需要从 .doc 转换
     
     if manual_dir.exists():
-        # 查找目录下的 .docx 文件
+        # 先找 .docx
         for f in os.listdir(str(manual_dir)):
             if f.lower().endswith('.docx'):
                 template_path = manual_dir / f
                 print(f"[INFO] 从知识库"手册"分类找到模板: {f}")
                 break
+        # 再找 .doc
+        if template_path is None:
+            for f in os.listdir(str(manual_dir)):
+                if f.lower().endswith('.doc'):
+                    doc_file = manual_dir / f
+                    print(f"[INFO] 从知识库"手册"分类找到 .doc 模板: {f}")
+                    # 尝试用 olefile 直接读取
+                    try:
+                        import olefile
+                        from langchain_core.documents import Document
+                        import re as _re
+                        
+                        ole = olefile.OleFileIO(str(doc_file))
+                        if ole.exists('WordDocument'):
+                            stream = ole.openstream('WordDocument')
+                            data = stream.read()
+                            decoded = data.decode('utf-16-le', errors='ignore')
+                            chunks = _re.findall(r'[一-鿿 -~　-〿＀-￯]+', decoded)
+                            ole.close()
+                            if chunks and len('\n'.join(chunks)) > 100:
+                                # olefile 能读到内容，但 python-docx 不能直接编辑 .doc
+                                # 需要转成 .docx 才能用 python-docx 编辑
+                                need_convert = True
+                                template_path = doc_file
+                                print(f"[INFO] .doc 文件可读取，但需要转换为 .docx 进行编辑")
+                    except Exception as e:
+                        print(f"[WARN] olefile 读取 .doc 失败: {e}")
+                    # 如果 olefile 失败，尝试用二进制方式
+                    if template_path is None:
+                        try:
+                            with open(str(doc_file), 'rb') as rf:
+                                raw = rf.read()
+                            decoded = raw.decode('utf-16-le', errors='ignore')
+                            chunks_list = re.findall(r'[一-鿿 -~　-〿＀-￯]+', decoded)
+                            if chunks_list and len('\n'.join(chunks_list)) > 100:
+                                need_convert = True
+                                template_path = doc_file
+                                print(f"[INFO] .doc 文件可读取（二进制方式），需要转换为 .docx")
+                        except Exception:
+                            pass
+                    break
     
     # 如果知识库没有，查找 SCskill 自带的模板
     if template_path is None:
@@ -224,6 +266,70 @@ def generate_manual(survey_data, output_dir):
         }
     
     print(f"[INFO] 使用模板: {template_path}")
+    
+    # 如果是 .doc 文件，需要转成 .docx 才能用 python-docx 编辑
+    actual_template = template_path
+    if str(template_path).lower().endswith('.doc'):
+        print(f"[INFO] 正在将 .doc 模板转换为 .docx 格式...")
+        import tempfile
+        import subprocess
+        
+        # 方法1：尝试用 pywin32 + Word COM
+        converted = False
+        try:
+            import win32com.client
+            import pythoncom
+            pythoncom.CoInitialize()
+            word = win32com.client.Dispatch("Word.Application")
+            word.Visible = False
+            doc_obj = word.Documents.Open(str(template_path))
+            tmp_docx = tempfile.mktemp(suffix='.docx')
+            doc_obj.SaveAs2(tmp_docx, FileFormat=16)
+            doc_obj.Close()
+            word.Quit()
+            pythoncom.CoUninitialize()
+            actual_template = Path(tmp_docx)
+            converted = True
+            print(f"[INFO] Word COM 转换成功")
+        except Exception as e:
+            print(f"[WARN] Word COM 转换失败: {e}")
+        
+        # 方法2：尝试用 LibreOffice
+        if not converted:
+            try:
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    soffice_paths = ['soffice', 
+                                   'C:\\Program Files\\LibreOffice\\program\\soffice.exe',
+                                   'C:\\Program Files (x86)\\LibreOffice\\program\\soffice.exe']
+                    for sp in soffice_paths:
+                        try:
+                            result = subprocess.run(
+                                [sp, '--headless', '--convert-to', 'docx', str(template_path), '--outdir', tmp_dir],
+                                capture_output=True, text=True, timeout=60
+                            )
+                            if result.returncode == 0:
+                                basename = os.path.splitext(os.path.basename(str(template_path)))[0]
+                                converted_path = os.path.join(tmp_dir, basename + '.docx')
+                                if os.path.exists(converted_path):
+                                    # 复制到临时文件（因为 tmp_dir 会被删除）
+                                    tmp_docx = tempfile.mktemp(suffix='.docx')
+                                    import shutil
+                                    shutil.copy2(converted_path, tmp_docx)
+                                    actual_template = Path(tmp_docx)
+                                    converted = True
+                                    print(f"[INFO] LibreOffice 转换成功")
+                                    break
+                        except Exception:
+                            continue
+            except Exception as e:
+                print(f"[WARN] LibreOffice 转换失败: {e}")
+        
+        if not converted:
+            return {
+                "status": "error",
+                "message": "无法将 .doc 模板转换为 .docx 格式。请安装 Microsoft Word 或 LibreOffice，或者上传 .docx 格式的模板文件。"
+            }
+    
     print(f"[INFO] 正在分析体系调研数据...")
     
     # 2. 构建替换映射
@@ -233,7 +339,7 @@ def generate_manual(survey_data, output_dir):
     print(f"[INFO] 正在加载模板文件...")
     
     # 3. 加载模板
-    doc = Document(str(template_path))
+    doc = Document(str(actual_template))
     print(f"[INFO] 模板加载完成，开始替换内容...")
     
     # 3. 加载模板
