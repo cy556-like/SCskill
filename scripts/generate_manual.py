@@ -296,23 +296,25 @@ def format_survey_for_llm(survey):
 # ===================================================================
 
 def build_llm_prompt(overview_text, survey_text):
-    """构造 LLM 提示词，返回 (system_prompt, user_prompt)"""
+    """构造 LLM 提示词，返回 (system_prompt, user_prompt)
+    使用 NDJSON（每行一个 JSON 对象）格式，方便流式增量解析。"""
     today = datetime.now()
     today_str = f"{today.year}年{today.month}月{today.day}日"
     year_str = str(today.year)
 
     system = (
         "你是质量手册智能生成助手。你会收到一份质量手册模板的结构概览（带段落索引P#、表格T#.R#、页眉H#、页脚F#）"
-        "和用户填写的体系调研数据。你的任务是根据调研数据，决定模板中哪些位置需要修改，并给出具体的修改方案。\n\n"
-        "输出严格的 JSON 格式，不要输出任何其他文字、不要用 markdown 代码块包裹。格式如下：\n"
-        "{\n"
-        "  \"modifications\": [\n"
-        "    {\"type\": \"paragraph\", \"index\": 92, \"new_text\": \"新段落内容\", \"reason\": \"为什么改\"},\n"
-        "    {\"type\": \"table_cell\", \"table\": 0, \"row\": 2, \"col\": 3, \"new_text\": \"王大明\", \"reason\": \"...\"},\n"
-        "    {\"type\": \"global_replace\", \"old\": \"山东AAA机械制造有限公司\", \"new\": \"诸暨正和金属有限公司\", \"reason\": \"...\"},\n"
-        "    {\"type\": \"header_replace\", \"old\": \"AAA-QM-2021\", \"new\": \"正和-QM-" + year_str + "\", \"reason\": \"...\"}\n"
-        "  ]\n"
-        "}\n\n"
+        "和用户填写的体系调研数据。你的任务是根据调研数据，决定模板中哪些位置需要修改，逐条输出修改方案。\n\n"
+        "【输出格式 - 极其重要】\n"
+        "每条修改方案单独输出为一行 JSON 对象（NDJSON 格式），不要包裹在数组里，不要输出任何其他文字。"
+        "每生成一条就立即输出一行，不要等所有方案想完再一起输出。输出完所有方案后，最后一行写：===END===\n\n"
+        "示例输出（每行一个 JSON，逐行输出）：\n"
+        '{"type":"global_replace","old":"山东AAA机械制造有限公司","new":"诸暨正和金属有限公司","reason":"整体替换公司名"}\n'
+        '{"type":"header_replace","old":"AAA-QM-2021","new":"正和-QM-' + year_str + '","reason":"替换文件编号"}\n'
+        '{"type":"paragraph","index":81,"new_text":" 总经理：王大明    （签名）","reason":"颁布令填入总经理姓名"}\n'
+        '{"type":"paragraph","index":92,"new_text":"    诸暨正和金属有限公司位于...","reason":"重写公司简介"}\n'
+        '{"type":"table_cell","table":0,"row":2,"col":3,"new_text":"王大明","reason":"批准人=总经理"}\n'
+        '===END===\n\n'
         "修改类型说明：\n"
         "- paragraph: 把段落 P#index 整段替换为 new_text（保留段落格式）\n"
         "- table_cell: 把表格 T#table 第 row 行第 col 列单元格替换为 new_text\n"
@@ -334,16 +336,44 @@ def build_llm_prompt(overview_text, survey_text):
         "10. 不要修改 IATF16949/ISO9001 标准条款内容、不要修改程序文件引用名（如《文件管理程序》）。\n"
         "11. 如果调研数据某字段为空，跳过对应修改。\n"
         "12. 修改方案要全面，覆盖所有该改的位置（公司名通常在封面、页眉、承诺书、简介等处多次出现）。\n"
+        "13. new_text 中的换行用 \\n 转义，不要在 JSON 字符串中放真实换行符。\n"
+        "14. 想到一条就立即输出一条，不要等想完所有再输出。\n"
     )
 
     user = (
         f"当前日期：{today_str}\n\n"
         f"{survey_text}\n\n"
         f"{overview_text}\n\n"
-        "请分析以上模板和调研数据，输出严格的 JSON 修改方案。"
+        "请分析以上模板和调研数据，逐条输出 NDJSON 格式的修改方案，每条一行，最后输出 ===END===。"
     )
 
     return system, user
+
+
+def parse_ndjson_line(line):
+    """解析一行 NDJSON 为 dict，失败返回 None。
+    支持去掉 markdown 代码块标记。"""
+    line = line.strip()
+    if not line or line == '===END===':
+        return None
+    # 去掉 markdown 代码块标记
+    if line.startswith('```'):
+        line = line.lstrip('`')
+        # 可能是 ```json 或 ```
+        line = line.replace('json', '', 1).strip()
+    if line.endswith('```'):
+        line = line[:-3].strip()
+    if not line.startswith('{') or not line.endswith('}'):
+        return None
+    try:
+        return json.loads(line)
+    except json.JSONDecodeError:
+        # 尝试修复尾随逗号
+        fixed = re.sub(r',\s*([}\]])', r'\1', line)
+        try:
+            return json.loads(fixed)
+        except json.JSONDecodeError:
+            return None
 
 
 # ===================================================================
