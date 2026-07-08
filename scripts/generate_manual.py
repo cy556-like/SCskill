@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 #!/usr/bin/env python3
 """
 SCskill - 质量手册生成脚本
@@ -171,9 +172,9 @@ def generate_manual(survey_data, output_dir):
     """生成质量手册"""
     
     # 1. 查找模板文件
-    # 优先从知识库"手册"分类目录下查找模板（.docx 或 .doc）
+    # 优先从知识库手册分类目录下查找模板（.docx 或 .doc）
     project_root = SKILL_ROOT.parent
-    manual_dir = project_root / "data" / "documents" / "agent_dfmea-risk-agent" / "手册"
+    manual_dir = project_root / "data" / "documents" / "agent_dfmea-risk-agent" / 手册
     template_path = None
     need_convert = False  # 是否需要从 .doc 转换
     
@@ -182,14 +183,14 @@ def generate_manual(survey_data, output_dir):
         for f in os.listdir(str(manual_dir)):
             if f.lower().endswith('.docx'):
                 template_path = manual_dir / f
-                print(f"[INFO] 从知识库"手册"分类找到模板: {f}")
+                print(f"[INFO] 从知识库手册分类找到模板: {f}")
                 break
         # 再找 .doc
         if template_path is None:
             for f in os.listdir(str(manual_dir)):
                 if f.lower().endswith('.doc'):
                     doc_file = manual_dir / f
-                    print(f"[INFO] 从知识库"手册"分类找到 .doc 模板: {f}")
+                    print(f"[INFO] 从知识库手册分类找到 .doc 模板: {f}")
                     # 尝试用 olefile 直接读取
                     try:
                         import olefile
@@ -262,7 +263,7 @@ def generate_manual(survey_data, output_dir):
     if template_path is None:
         return {
             "status": "error",
-            "message": "模板文件未找到。请在"企业内部体系文件 → 手册"分类下上传一个 .docx 格式的质量手册模板文件。"
+            "message": "Template not found. Please upload a .docx or .doc template file to the manual category in the internal KB."
         }
     
     print(f"[INFO] 使用模板: {template_path}")
