@@ -53,21 +53,40 @@ TEMPLATE_FILE = "IATF16949_quality_manual_template.docx"
 # 1. 模板查找 & .doc → .docx 转换
 # ===================================================================
 
-def find_template(agent_id=None):
+def find_template(agent_id=None, documents_dir=None):
     """查找模板文件（三级查找）：
     1. 企业内部文件知识库（agent_{agent_id}/手册/）下的 .docx/.doc 文件（递归搜索子目录）
     2. 全质知识库（external_kb/体系文件/手册/全质手册模板/）下的 .docx/.doc 文件
     3. SCskill 内置模板
 
+    Args:
+        agent_id: 智能体ID（如 'dfmea-risk-agent'）
+        documents_dir: 数据目录路径（如 Path('C:/beifen/QZAGENT/data/documents')）
+                       如果不传，自动从 SKILL_ROOT 向上查找
+
     返回 (template_path, need_convert, template_source)
     template_source: 'internal' / 'external' / 'builtin'
     """
-    project_root = SKILL_ROOT.parent
-    documents_dir = project_root / "data" / "documents"
+    # 确定 documents_dir 路径
+    if documents_dir is None:
+        # 从 SKILL_ROOT 向上查找 data/documents 目录
+        # SKILL_ROOT = skills/SCskill/
+        # project_root = skills/ 的上一级 = QZAGENT/
+        candidate = SKILL_ROOT.parent.parent / "data" / "documents"
+        if candidate.exists():
+            documents_dir = candidate
+        else:
+            # 兜底：用 SKILL_ROOT.parent/data/documents（可能不存在）
+            documents_dir = SKILL_ROOT.parent / "data" / "documents"
+    else:
+        documents_dir = Path(documents_dir)
+
+    print(f"[INFO] find_template: documents_dir={documents_dir}, agent_id={agent_id}")
 
     # 1. 企业内部文件知识库（递归搜索 手册/ 下所有子目录）
     if agent_id:
         manual_dir = documents_dir / f"agent_{agent_id}" / "手册"
+        print(f"[INFO] 查找企业内部文件: {manual_dir} (exists={manual_dir.exists()})")
         if manual_dir.exists():
             # 递归搜索所有 .docx 文件
             for root, dirs, files in os.walk(str(manual_dir)):
@@ -84,6 +103,7 @@ def find_template(agent_id=None):
 
     # 2. 全质知识库（external_kb/体系文件/手册/全质手册模板/）
     ext_template_dir = documents_dir / "external_kb" / "体系文件" / "手册" / "全质手册模板"
+    print(f"[INFO] 查找全质知识库: {ext_template_dir} (exists={ext_template_dir.exists()})")
     if ext_template_dir.exists():
         for f in sorted(os.listdir(str(ext_template_dir))):
             if f.lower().endswith('.docx') and not f.startswith('~$'):
