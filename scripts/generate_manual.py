@@ -88,6 +88,7 @@ def find_template(agent_id=None, documents_dir=None):
         manual_dir = documents_dir / f"agent_{agent_id}" / "手册"
         print(f"[INFO] 查找企业内部文件: {manual_dir} (exists={manual_dir.exists()})")
         if manual_dir.exists():
+            found_internal = False
             # 递归搜索所有 .docx 文件
             for root, dirs, files in os.walk(str(manual_dir)):
                 for f in sorted(files):
@@ -100,6 +101,7 @@ def find_template(agent_id=None, documents_dir=None):
                     if f.lower().endswith('.doc') and not f.startswith('~$'):
                         print(f"[INFO] 从企业内部文件知识库找到 .doc 模板: {f} (路径: {root})")
                         return Path(root) / f, True, 'internal'
+            print(f"[INFO] 企业内部文件知识库 手册/ 下未找到 .docx/.doc 文件（用户未上传模板）")
 
     # 2. 全质知识库（external_kb/体系文件/手册/全质手册模板/）
     ext_template_dir = documents_dir / "external_kb" / "体系文件" / "手册" / "全质手册模板"
