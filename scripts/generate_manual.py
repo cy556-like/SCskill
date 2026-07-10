@@ -634,3 +634,23 @@ def apply_modifications(doc, modifications):
             stats['failed'] += 1
             print(f"  [ERROR] 修改 #{i} 失败: {e}")
     return stats
+
+
+def remove_even_page_headers_footers(doc):
+    """删除偶数页页眉页脚引用（LibreOffice 转 .doc→.docx 时会自动添加，
+    导致 Word 渲染时多出空白页）"""
+    from docx.oxml.ns import qn
+    removed = 0
+    for sec in doc.sections:
+        sectPr = sec._sectPr
+        for ref in sectPr.findall(qn('w:headerReference')):
+            if ref.get(qn('w:type')) == 'even':
+                sectPr.remove(ref)
+                removed += 1
+        for ref in sectPr.findall(qn('w:footerReference')):
+            if ref.get(qn('w:type')) == 'even':
+                sectPr.remove(ref)
+                removed += 1
+    if removed > 0:
+        print(f"[INFO] 删除了 {removed} 个偶数页页眉页脚引用")
+    return removed
