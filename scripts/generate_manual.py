@@ -637,10 +637,11 @@ def apply_modifications(doc, modifications):
 
 
 def remove_even_page_headers_footers(doc):
-    """删除偶数页页眉页脚引用（LibreOffice 转 .doc→.docx 时会自动添加，
-    导致 Word 渲染时多出空白页）"""
+    """删除偶数页页眉页脚引用 + 修复 LibreOffice 转换导致的空白页"""
     from docx.oxml.ns import qn
     removed = 0
+
+    # 1. 删除偶数页引用
     for sec in doc.sections:
         sectPr = sec._sectPr
         for ref in sectPr.findall(qn('w:headerReference')):
@@ -653,4 +654,27 @@ def remove_even_page_headers_footers(doc):
                 removed += 1
     if removed > 0:
         print(f"[INFO] 删除了 {removed} 个偶数页页眉页脚引用")
+
+    # 2. 修复空白页：LibreOffice 转 .doc→.docx 时，段落0是空段落+nextPage分节符
+    # 这会导致封面后多出一个空白页
+    # 修复：把段落0的 sectPr 移到段落1，然后删除段落0
+    if len(doc.paragraphs) >= 2:
+        p0 = doc.paragraphs[0]
+        p1 = doc.paragraphs[1]
+        pPr0 = p0._element.find(qn('w:pPr'))
+        pPr1 = p1._element.find(qn('w:pPr'))
+
+        if pPr0 is not None:
+            sectPr0 = pPr0.find(qn('w:sectPr'))
+            if sectPr0 is not None and not p0.text.strip():
+                if pPr1 is None:
+                    pPr1 = p1._element.makeelement(qn('w:pPr'), {})
+                    p1._element.insert(0, pPr1)
+                existing = pPr1.find(qn('w:sectPr'))
+                if existing is None:
+                    pPr1.append(sectPr0)
+                    print(f"[INFO] 将段落0的分节符移动到段落1（修复空白页）")
+                p0._element.getparent().remove(p0._element)
+                print(f"[INFO] 删除空段落0（修复空白页）")
+
     return removed
