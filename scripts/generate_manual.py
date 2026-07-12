@@ -109,10 +109,18 @@ def find_template(agent_id=None, documents_dir=None):
     if ext_template_dir.exists():
         for f in sorted(os.listdir(str(ext_template_dir))):
             if f.lower().endswith('.docx') and not f.startswith('~$'):
+                # [需求] 全质知识库模板只使用 AAA/aaa 命名的文件
+                if 'AAA' not in f and 'aaa' not in f:
+                    print(f"[INFO] 跳过非AAA模板: {f}")
+                    continue
                 print(f"[INFO] 从全质知识库找到模板: {f}")
                 return ext_template_dir / f, False, 'external'
         for f in sorted(os.listdir(str(ext_template_dir))):
             if f.lower().endswith('.doc') and not f.startswith('~$'):
+                # [需求] 全质知识库模板只使用 AAA/aaa 命名的文件
+                if 'AAA' not in f and 'aaa' not in f:
+                    print(f"[INFO] 跳过非AAA模板: {f}")
+                    continue
                 print(f"[INFO] 从全质知识库找到 .doc 模板: {f}")
                 return ext_template_dir / f, True, 'external'
 
