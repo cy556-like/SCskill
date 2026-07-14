@@ -329,6 +329,7 @@ def format_survey_for_llm(survey):
         'sv_filler_phone': '填写人手机',
         'sv_certs': '已有证书',
         'sv_org': '机构设置',
+        'sv_org_custom_rows': '自定义部门',
     }
     lines = ["=== 用户体系调研数据 ==="]
     for key, label in field_labels.items():
