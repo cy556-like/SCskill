@@ -133,6 +133,82 @@ def find_template(agent_id=None, documents_dir=None):
     return None, False, None
 
 
+def find_all_templates(agent_id=None, documents_dir=None):
+    """查找所有手册模板（支持多个文件，用户可能上传多个手册分册）
+
+    查找逻辑：
+    1. 企业内部文件 agent_{id}/手册/ → 递归搜索所有 .docx/.doc 文件
+    2. 全质知识库 external_kb/体系文件/手册/全质手册模板/ → AAA/aaa 命名的文件
+    3. 无内置模板（手册无通用内置模板）
+
+    返回 list of dict:
+    [
+      {"path": Path, "need_convert": bool, "source": "internal"/"external",
+       "filename": "文件名"},
+      ...
+    ]
+    """
+    if documents_dir is None:
+        candidate = SKILL_ROOT.parent.parent / "data" / "documents"
+        if candidate.exists():
+            documents_dir = candidate
+        else:
+            documents_dir = SKILL_ROOT.parent / "data" / "documents"
+    else:
+        documents_dir = Path(documents_dir)
+
+    print(f"[INFO] find_all_templates: documents_dir={documents_dir}, agent_id={agent_id}")
+
+    # 1. 收集企业内部文件
+    internal_templates = []
+    if agent_id:
+        manual_dir = documents_dir / f"agent_{agent_id}" / "手册"
+        print(f"[INFO] 查找企业内部文件: {manual_dir} (exists={manual_dir.exists()})")
+        if manual_dir.exists():
+            for root, dirs, files in os.walk(str(manual_dir)):
+                for f in sorted(files):
+                    if f.startswith('~$'):
+                        continue
+                    ext = f.lower().rsplit('.', 1)[-1] if '.' in f else ''
+                    if ext in ('docx', 'doc'):
+                        internal_templates.append({
+                            "path": Path(root) / f,
+                            "need_convert": (ext == 'doc'),
+                            "source": 'internal',
+                            "filename": f
+                        })
+                        print(f"[INFO] 企业内部文件: {f} (source=internal)")
+
+    # 2. 收集全质知识库
+    ext_templates = []
+    ext_template_dir = documents_dir / "external_kb" / "体系文件" / "手册" / "全质手册模板"
+    print(f"[INFO] 查找全质知识库: {ext_template_dir} (exists={ext_template_dir.exists()})")
+    if ext_template_dir.exists():
+        for f in sorted(os.listdir(str(ext_template_dir))):
+            if f.startswith('~$'):
+                continue
+            ext = f.lower().rsplit('.', 1)[-1] if '.' in f else ''
+            if ext in ('docx', 'doc'):
+                # [需求] 全质知识库模板只使用 AAA/aaa 命名的文件
+                if 'AAA' not in f and 'aaa' not in f:
+                    print(f"[INFO] 跳过非AAA模板: {f}")
+                    continue
+                ext_templates.append({
+                    "path": ext_template_dir / f,
+                    "need_convert": (ext == 'doc'),
+                    "source": 'external',
+                    "filename": f
+                })
+                print(f"[INFO] 全质知识库: {f} (source=external)")
+
+    all_templates = internal_templates + ext_templates
+    print(f"[INFO] 总计找到 {len(all_templates)} 个手册模板（企业内部 {len(internal_templates)} + 全质知识库 {len(ext_templates)}）")
+    for t in all_templates:
+        print(f"  - [{t['source']}] {t['filename']}")
+
+    return all_templates
+
+
 def convert_doc_to_docx(doc_path):
     """用 LibreOffice 或 Word COM 把 .doc 转成 .docx，返回临时 .docx 路径"""
     tmp_dir = tempfile.mkdtemp(prefix='doc2docx_')
