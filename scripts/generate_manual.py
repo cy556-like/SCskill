@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 #!/usr/bin/env python3
 """
 SCskill - 质量手册生成脚本（docx 处理库）
@@ -13,7 +13,7 @@ LLM 调用由后端 routes.py 用项目已有的 langchain create_llm 完成，
   - extract_template_overview(doc)  提取模板结构概览
   - format_overview_for_llm(overview)  概览格式化为文本
   - format_survey_for_llm(survey)  调研数据格式化为文本
-  - build_llm_prompt(overview_text, survey_text)  构造 LLM 提示词
+  - build_llm_prompt(overview_text, survey_text, survey=None)  构造 LLM 提示词，survey 参数用于计算实施日期
   - parse_llm_modifications(llm_text)  解析 LLM 返回的修改方案 JSON
   - apply_modifications(doc, modifications)  应用修改方案到 docx
 """
@@ -432,12 +432,129 @@ def format_survey_for_llm(survey):
 # 3. 构造 LLM 提示词
 # ===================================================================
 
-def build_llm_prompt(overview_text, survey_text):
+def _parse_date(date_str):
+    """将各种格式的日期字符串解析为 datetime 对象，失败返回 None。
+    支持: 2024年3月15日, 2024-03-15, 2024/03/15, 2024.03.15, ISO格式"""
+    if not date_str or not isinstance(date_str, str):
+        return None
+    date_str = date_str.strip()
+    if not date_str:
+        return None
+    # 尝试各种格式
+    formats = [
+        '%Y年%m月%d日', '%Y-%m-%d', '%Y/%m/%d', '%Y.%m.%d',
+        '%Y-%m-%dT%H:%M:%S', '%Y-%m-%dT%H:%M:%S.%f',
+        '%Y-%m-%d %H:%M:%S',
+        '%Y年%m月%d日 %H:%M:%S',
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_str, fmt)
+        except ValueError:
+            continue
+    # 尝试用正则提取数字
+    m = re.search(r'(\d{4})\D+(\d{1,2})\D+(\d{1,2})', date_str)
+    if m:
+        try:
+            return datetime(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        except ValueError:
+            return None
+    return None
+
+
+def _contains_16949(certs):
+    """判断证书列表中是否包含 IATF 16949"""
+    if not certs:
+        return False
+    if isinstance(certs, str):
+        return '16949' in certs
+    if isinstance(certs, (list, tuple)):
+        for c in certs:
+            if isinstance(c, str) and '16949' in c:
+                return True
+    return False
+
+
+def _subtract_months(dt, months):
+    """从日期减去指定月数，返回新的 datetime。自动处理月末溢出（如 3月31日 - 1月 = 2月28/29日）。"""
+    import calendar
+    total_months = dt.year * 12 + dt.month - 1 - months
+    new_year = total_months // 12
+    new_month = total_months % 12 + 1
+    max_day = calendar.monthrange(new_year, new_month)[1]
+    new_day = min(dt.day, max_day)
+    return dt.replace(year=new_year, month=new_month, day=new_day)
+
+
+def calculate_implementation_date(survey):
+    """根据证书类型和第一阶段开始时间，计算手册实施日期（发布/生效日期）。
+
+    逻辑：
+    - 证书含 IATF 16949:
+      - 未填写第一阶段开始时间 → 计划取得认证证书日期 - 18个月
+      - 已填写第一阶段开始时间 → 第一阶段开始时间 - 15个月
+    - 非 16949（如 ISO 9001）:
+      - 未填写第一阶段开始时间 → 计划取得认证证书日期 - 5个月
+      - 已填写第一阶段开始时间 → 第一阶段开始时间 - 4个月
+
+    返回 (implementation_date_str, description_str)
+    implementation_date_str 格式: "2024年3月15日"
+    """
+    certs = survey.get('sv_certs', [])
+    is_16949 = _contains_16949(certs)
+
+    audit_date_str = (survey.get('sv_audit_date') or '').strip()
+    cert_date_str = (survey.get('sv_cert_date') or '').strip()
+
+    audit_date = _parse_date(audit_date_str)
+    cert_date = _parse_date(cert_date_str)
+
+    if is_16949:
+        if audit_date:
+            impl_date = _subtract_months(audit_date, 15)
+            desc = f"IATF 16949认证，第一阶段开始时间={audit_date_str}，向前推15个月作为手册实施日期"
+        elif cert_date:
+            impl_date = _subtract_months(cert_date, 18)
+            desc = f"IATF 16949认证，计划取得认证证书日期={cert_date_str}，向前推18个月作为手册实施日期"
+        else:
+            today = datetime.now()
+            impl_date = today
+            desc = "IATF 16949认证，但认证日期和第一阶段开始时间均未填写，回退使用当前日期"
+    else:
+        if audit_date:
+            impl_date = _subtract_months(audit_date, 4)
+            desc = f"非16949认证，第一阶段开始时间={audit_date_str}，向前推4个月作为手册实施日期"
+        elif cert_date:
+            impl_date = _subtract_months(cert_date, 5)
+            desc = f"非16949认证，计划取得认证证书日期={cert_date_str}，向前推5个月作为手册实施日期"
+        else:
+            today = datetime.now()
+            impl_date = today
+            desc = "非16949认证，但认证日期和第一阶段开始时间均未填写，回退使用当前日期"
+
+    impl_date_str = f"{impl_date.year}年{impl_date.month}月{impl_date.day}日"
+    return impl_date_str, desc
+
+
+def build_llm_prompt(overview_text, survey_text, survey=None):
     """构造 LLM 提示词，返回 (system_prompt, user_prompt)
-    使用 NDJSON（每行一个 JSON 对象）格式，方便流式增量解析。"""
+    使用 NDJSON（每行一个 JSON 对象）格式，方便流式增量解析。
+
+    Args:
+        overview_text: 模板结构概览文本
+        survey_text: 调研数据格式化文本
+        survey: 原始调研数据 dict（用于计算实施日期，可选）
+    """
     today = datetime.now()
     today_str = f"{today.year}年{today.month}月{today.day}日"
     year_str = str(today.year)
+
+    # 计算实施日期：根据证书类型和第一阶段开始时间倒推
+    if survey:
+        impl_date_str, impl_date_desc = calculate_implementation_date(survey)
+    else:
+        impl_date_str = today_str
+        impl_date_desc = "未提供调研原始数据，使用当前日期"
 
     system = (
         "你是质量手册智能生成助手。你会收到一份质量手册模板的结构概览（带段落索引P#、表格T#.R#、页眉H#、页脚F#）"
@@ -469,7 +586,13 @@ def build_llm_prompt(overview_text, survey_text):
         "6. 公司联络：地址、电话、传真按字段替换到\"公司联络\"章节对应行。\n"
         "7. 公司宗旨/经营理念：替换模板里\"公司经营理念：...\"段。\n"
         "8. 文件编号：模板里的文件编号（如 AAA-QM-2021）替换为公司简称+当前年份（简称取公司名前4字）。\n"
-        "9. 实施日期：模板里\"X年X月X日起实施\"替换为" + today_str + "起实施。\n"
+        "9. 实施日期（重要——已按认证准备周期倒推计算）：手册应先在体系运行前发布实施，"
+        "根据证书类型和第一阶段开始时间倒推得出实施日期为 " + impl_date_str + "。\n"
+        "   【计算依据】" + impl_date_desc + "。\n"
+        "   模板里所有\"X年X月X日起实施\"、\"发布日期\"、\"生效日期\"、\"实施日期\"等表达手册生效时间的日期，"
+        "都要替换为 " + impl_date_str + "。\n"
+        "   注意：\"计划取得认证证书日期\"不要改，那是认证目标日期，不是手册的日期。\n"
+        "   手册的日期是体系开始运行的日期，必须早于认证日期。\n"
         "10. 不要修改 IATF16949/ISO9001 标准条款内容、不要修改程序文件引用名（如《文件管理程序》）。\n"
         "11. 如果调研数据某字段为空，跳过对应修改。\n"
         "12. 修改方案要全面，覆盖所有该改的位置（公司名通常在封面、页眉、承诺书、简介等处多次出现）。\n"
@@ -772,3 +895,4 @@ def remove_even_page_headers_footers(doc):
                 print(f"[INFO] 删除空段落0（修复空白页）")
 
     return removed
+
