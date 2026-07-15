@@ -201,17 +201,12 @@ def find_all_templates(agent_id=None, documents_dir=None):
                 })
                 print(f"[INFO] 全质知识库: {f} (source=external)")
 
-    # 如果用户上传了手册（企业内部有文件），就不用全质知识库的手册
-    # 逻辑：企业内部有 → 只用企业内部的；企业内部没有 → 用全质知识库的
-    if internal_templates:
-        all_templates = internal_templates
-        print(f"[INFO] 用户已上传手册，只使用企业内部文件（{len(internal_templates)} 个），跳过全质知识库")
-    else:
-        all_templates = ext_templates
-        if ext_templates:
-            print(f"[INFO] 用户未上传手册，使用全质知识库（{len(ext_templates)} 个）")
-
-    print(f"[INFO] 总计使用 {len(all_templates)} 个手册模板")
+    # [新需求] 总是返回 internal + external 全部模板
+    # - internal：用户上传的手册，routes.py 会用 AI 修改后作为主文件返回下载
+    # - external：全质知识库的手册，routes.py 会作为"参考文件"原样复制返回下载（不修改公司名）
+    # 这样用户上传不全时，缺失的部分可以从全质知识库补全作为参考
+    all_templates = internal_templates + ext_templates
+    print(f"[INFO] 总计找到 {len(all_templates)} 个手册模板（企业内部 {len(internal_templates)} + 全质知识库 {len(ext_templates)}）")
     for t in all_templates:
         print(f"  - [{t['source']}] {t['filename']}")
 
