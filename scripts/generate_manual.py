@@ -651,6 +651,56 @@ def build_diff_prompt(ext_overview_text, user_manual_text, ext_filename):
     return system, user
 
 
+
+
+def build_covered_prompt(ext_overview_text, user_manual_text, ext_filename):
+    """构造「已覆盖章节识别」LLM 提示词。
+
+    让 AI 对比全质模板概览 vs 用户上传手册，输出「全质模板中已被用户手册覆盖」的段落索引列表。
+    routes.py 拿到这些索引后，从全质模板 docx 中删除对应段落，保留差异部分。
+
+    输出格式（NDJSON，每行一个 JSON 对象）：
+        {"covered": true, "indices": [3, 4, 5], "reason": "5.3 内部审核 - 用户手册已覆盖"}
+        {"covered": true, "indices": [10, 11], "reason": "7.2 培训 - 用户手册已覆盖"}
+        ===END===
+
+    如果用户手册完全没覆盖任何内容（差异 = 全质模板），输出 ===END===（无任何 JSON 行）。
+    """
+    system = (
+        "你是质量手册内容对比专家。你会收到两份文档：\n"
+        "1. 全质知识库的质量手册模板（结构概览，每段带 P# 索引）\n"
+        "2. 用户上传的一个或多个手册（结构概览）\n\n"
+        "你的任务是：找出「全质模板中已被用户手册覆盖」的段落索引，输出给后端用于删除。\n\n"
+        "【判定原则】\n"
+        "- 如果全质模板某段落的内容在用户手册中有对应主题（即使表述不同），算「已覆盖」\n"
+        "- 如果用户手册只是更简略但主题一致，算「已覆盖」\n"
+        "- 如果用户手册完全没相关内容，算「未覆盖」（保留为差异）\n"
+        "- 段落索引必须严格基于全质模板概览中的 P# 编号\n\n"
+        "【输出格式 - 极其重要】\n"
+        "每条输出一行 JSON 对象（NDJSON），格式：\n"
+        '{"covered": true, "indices": [P索引1, P索引2, ...], "reason": "简要说明"}\n\n'
+        "示例：\n"
+        '{"covered": true, "indices": [3, 4, 5], "reason": "5.3 内部审核 - 用户手册已覆盖"}\n'
+        '{"covered": true, "indices": [10, 11, 12], "reason": "7.2 培训 - 用户手册已覆盖"}\n'
+        "===END===\n\n"
+        "重要：\n"
+        "1. indices 必须是全质模板概览中真实存在的 P# 索引\n"
+        "2. 一条 JSON 可以包含多个连续索引（同一章节的多个段落）\n"
+        "3. 不要把整个文档都标记为已覆盖，除非用户手册真的涵盖了所有内容\n"
+        "4. 标题段落（如 '5.3 内部审核' 单独成段）也要包含在 indices 中\n"
+        "5. 不要输出其他任何说明文字，只输出 JSON 行 + ===END===\n"
+        "6. 如果用户手册完全没覆盖任何内容，直接输出 ===END===（不输出 JSON 行）\n"
+    )
+
+    user = (
+        f"全质知识库模板：{ext_filename}\n\n"
+        f"=== 全质模板结构概览 ===\n{ext_overview_text}\n\n"
+        f"=== 用户上传手册结构概览 ===\n{user_manual_text}\n\n"
+        "请对比以上两份文档，逐行输出已被用户手册覆盖的段落索引（NDJSON 格式），最后输出 ===END===。"
+    )
+
+    return system, user
+
 def parse_ndjson_line(line):
     """解析一行 NDJSON 为 dict，失败返回 None。
     支持去掉 markdown 代码块标记。"""
@@ -826,6 +876,44 @@ def apply_paragraph_replace(doc, index, new_text):
         return False
     set_paragraph_text(p, new_text)
     return True
+
+
+def delete_paragraphs_by_indices(doc, indices):
+    """从 docx 中删除指定索引的段落（用于生成补缺参考文件时删除用户已覆盖的章节）。
+
+    注意：
+    - 从大到小排序后逐个删除，避免索引移位
+    - 跳过节分界段落（含 sectPr），避免破坏文档结构
+    - 段落被删除后，其所在表格不会被删除（表格是独立元素）
+
+    Args:
+        doc: python-docx Document 对象
+        indices: 要删除的段落索引列表
+
+    Returns:
+        int: 实际删除的段落数
+    """
+    from docx.oxml.ns import qn
+    if not indices:
+        return 0
+    # 去重 + 降序排序（从后往前删，避免索引移位）
+    unique_indices = sorted(set(int(i) for i in indices if i >= 0), reverse=True)
+    deleted = 0
+    total = len(doc.paragraphs)
+    for idx in unique_indices:
+        if idx >= total:
+            continue
+        p = doc.paragraphs[idx]
+        # 跳过节分界段落
+        pPr = p._element.find(qn('w:pPr'))
+        if pPr is not None and pPr.find(qn('w:sectPr')) is not None:
+            print(f"[INFO] 删除时跳过节分界段落 P{idx}")
+            continue
+        # 从父元素中移除该段落
+        p._element.getparent().remove(p._element)
+        deleted += 1
+    print(f"[INFO] 删除了 {deleted} 个段落（请求 {len(unique_indices)} 个，含越界/节分界跳过）")
+    return deleted
 
 
 def apply_table_cell_replace(doc, table_idx, row_idx, col_idx, new_text):
