@@ -712,6 +712,8 @@ def replace_text_in_cell(cell, old, new):
 
 def apply_global_replace(doc, old, new):
     """在全文（段落+表格+页眉页脚）做替换"""
+    if new is None:
+        new = ''
     if not old or old == new:
         return 0
     count = 0
@@ -745,6 +747,8 @@ def apply_global_replace(doc, old, new):
 
 def apply_header_replace(doc, old, new):
     """仅在页眉页脚做替换"""
+    if new is None:
+        new = ''
     if not old or old == new:
         return 0
     count = 0
@@ -772,6 +776,13 @@ def apply_paragraph_replace(doc, index, new_text):
         print(f"[WARN] 段落索引 {index} 越界（总段落数 {len(doc.paragraphs)}）")
         return False
     p = doc.paragraphs[index]
+    # 【节分界段落保护】如果段落含 sectPr（节分界符），禁止修改内容
+    # 节分界段落必须保持空白，填入内容会导致节属性错乱、页眉引用丢失、空白页
+    from docx.oxml.ns import qn
+    pPr = p._element.find(qn('w:pPr'))
+    if pPr is not None and pPr.find(qn('w:sectPr')) is not None:
+        print(f"[INFO] 跳过节分界段落 P{index}（含 sectPr，禁止修改）")
+        return False
     set_paragraph_text(p, new_text)
     return True
 
