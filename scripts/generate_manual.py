@@ -896,8 +896,14 @@ def delete_paragraphs_by_indices(doc, indices):
     from docx.oxml.ns import qn
     if not indices:
         return 0
-    # 去重 + 降序排序（从后往前删，避免索引移位）
-    unique_indices = sorted(set(int(i) for i in indices if i >= 0), reverse=True)
+    # [Bug 修复] 先转 int 再过滤负数，避免字符串索引崩溃
+    _parsed = []
+    for i in indices:
+        try:
+            _parsed.append(int(i))
+        except (ValueError, TypeError):
+            continue
+    unique_indices = sorted(set(i for i in _parsed if i >= 0), reverse=True)
     deleted = 0
     total = len(doc.paragraphs)
     for idx in unique_indices:
